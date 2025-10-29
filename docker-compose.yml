@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  autonomous_car:
+    build: .
+    container_name: ros2_autonomous_car
+    stdin_open: true
+    tty: true
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./src:/ros2_ws/src:rw
+    command: ros2 launch autonomous_car_sim autonomous_car.launch.py
