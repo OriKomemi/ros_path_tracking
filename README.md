@@ -316,3 +316,7 @@ Apache-2.0
 - Implement more advanced controllers (MPC, LQR)
 - Add multi-vehicle simulation
 - Integrate with Gazebo for 3D simulation
+
+
+gz service -s /world/empty/set_pose   --reqtype gz.msgs.Pose   --reptype gz.msgs.Boolean   --timeout 2000   --req "name: 'bgr', position: {x: 45.751, y: 81.3, z: 1.0}, orientation: {x: -0.0001, y: -0.0007, z: 1.232886347679596e-06, w: 0.9999}"
+data: true

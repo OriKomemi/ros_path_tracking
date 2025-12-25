@@ -8,15 +8,16 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     """
-    Launch file for autonomous car simulation.
-    Starts vehicle simulator, path planner, and vehicle controller.
+    Launch file for autonomous car with Gazebo.
+    Uses Gazebo for simulation, SuperStateSpy for state, and controller for commands.
+    No VehicleSimulator needed - works directly with Gazebo odometry.
     """
 
     # Declare launch arguments
     path_type_arg = DeclareLaunchArgument(
         'path_type',
-        default_value='circle',
-        description='Type of path to generate (circle, figure8, straight)'
+        default_value='racing_line',
+        description='Type of path to use (racing_line, circle, figure8, straight)'
     )
 
     radius_arg = DeclareLaunchArgument(
@@ -43,11 +44,11 @@ def generate_launch_description():
     target_velocity = LaunchConfiguration('target_velocity')
     lookahead_distance = LaunchConfiguration('lookahead_distance')
 
-    # Vehicle Simulator Node
-    vehicle_simulator = Node(
+    # SuperStateSpy Node - Processes Gazebo odometry and publishes full state
+    super_state_spy = Node(
         package='autonomous_car_sim',
-        executable='vehicle_simulator',
-        name='vehicle_simulator',
+        executable='super_state_spy',
+        name='super_state_spy',
         output='screen',
         parameters=[{
             'use_sim_time': False,
@@ -87,7 +88,7 @@ def generate_launch_description():
         radius_arg,
         target_velocity_arg,
         lookahead_distance_arg,
-        vehicle_simulator,
+        super_state_spy,
         path_planner,
         vehicle_controller,
     ])

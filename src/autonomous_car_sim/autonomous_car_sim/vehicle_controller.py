@@ -2,15 +2,17 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Path
+from std_msgs.msg import Float64MultiArray
 import math
+import numpy as np
 
 
 class VehicleController(Node):
     """
-    Simple path-following controller using Pure Pursuit algorithm.
-    Subscribes to vehicle pose and planned path, publishes control commands.
+    Pure Pursuit path-following controller for Gazebo.
+    Uses full state from SuperStateSpy and publishes Gazebo control commands.
+    No dependency on VehicleSimulator - works directly with Gazebo odometry.
     """
 
     def __init__(self):
@@ -20,24 +22,30 @@ class VehicleController(Node):
         self.declare_parameter('lookahead_distance', 5.0)
         self.declare_parameter('target_velocity', 5.0)
         self.declare_parameter('wheelbase', 2.5)
+        self.declare_parameter('wheel_radius', 0.3)
+        self.declare_parameter('max_steering_angle', 0.524)  # ~30 degrees
 
         # Get parameters
         self.lookahead_distance = self.get_parameter('lookahead_distance').value
         self.target_velocity = self.get_parameter('target_velocity').value
         self.wheelbase = self.get_parameter('wheelbase').value
+        self.wheel_radius = self.get_parameter('wheel_radius').value
+        self.max_steering = self.get_parameter('max_steering_angle').value
 
-        # Vehicle state
-        self.current_pose = None
+        # Vehicle state (using only SuperStateSpy full_state, not VehicleSimulator pose)
+        self.current_state = None
         self.planned_path = None
 
         # Publishers
-        self.cmd_pub = self.create_publisher(Twist, '/vehicle/cmd_vel', 10)
+        # Gazebo control publishers (primary output)
+        self.steering_pub = self.create_publisher(Float64MultiArray, '/forward_position_controller/commands', 10)
+        self.velocity_pub = self.create_publisher(Float64MultiArray, '/forward_velocity_controller/commands', 10)
 
         # Subscribers
-        self.pose_sub = self.create_subscription(
-            PoseStamped,
-            '/vehicle/pose',
-            self.pose_callback,
+        self.state_sub = self.create_subscription(
+            Float64MultiArray,
+            '/robot/full_state',
+            self.state_callback,
             10
         )
         self.path_sub = self.create_subscription(
@@ -52,18 +60,44 @@ class VehicleController(Node):
 
         self.get_logger().info('Vehicle Controller started')
 
-    def pose_callback(self, msg):
-        """Receive current vehicle pose"""
-        self.current_pose = msg
+    def state_callback(self, msg):
+        """
+        Receive full state from SuperStateSpy.
+
+        State vector layout (12 elements):
+        0: pos_x, 1: pos_y, 2: pos_z
+        3: roll, 4: pitch, 5: yaw
+        6: vel_x, 7: vel_y, 8: vel_z
+        9: acc_x, 10: acc_y, 11: acc_z
+        """
+        self.current_state = {
+            'x': msg.data[0],
+            'y': msg.data[1],
+            'z': msg.data[2],
+            'roll': msg.data[3],
+            'pitch': msg.data[4],
+            'yaw': msg.data[5],
+            'vx': msg.data[6],
+            'vy': msg.data[7],
+            'vz': msg.data[8],
+            'ax': msg.data[9],
+            'ay': msg.data[10],
+            'az': msg.data[11],
+            'speed': np.sqrt(msg.data[6]**2 + msg.data[7]**2)
+        }
 
     def path_callback(self, msg):
         """Receive planned path"""
         self.planned_path = msg
 
     def find_lookahead_point(self):
-        """Find the lookahead point on the path"""
-        if self.planned_path is None or len(self.planned_path.poses) == 0:
+        """Find the lookahead point on the path using current_state from SuperStateSpy"""
+        if self.current_state is None or self.planned_path is None or len(self.planned_path.poses) == 0:
             return None
+
+        # Get current position from state vector
+        current_x = self.current_state['x']
+        current_y = self.current_state['y']
 
         min_dist = float('inf')
         closest_idx = 0
@@ -71,8 +105,8 @@ class VehicleController(Node):
         # Find closest point on path
         for i, pose in enumerate(self.planned_path.poses):
             dist = math.sqrt(
-                (pose.pose.position.x - self.current_pose.pose.position.x) ** 2 +
-                (pose.pose.position.y - self.current_pose.pose.position.y) ** 2
+                (pose.pose.position.x - current_x) ** 2 +
+                (pose.pose.position.y - current_y) ** 2
             )
             if dist < min_dist:
                 min_dist = dist
@@ -82,8 +116,8 @@ class VehicleController(Node):
         for i in range(closest_idx, len(self.planned_path.poses)):
             pose = self.planned_path.poses[i]
             dist = math.sqrt(
-                (pose.pose.position.x - self.current_pose.pose.position.x) ** 2 +
-                (pose.pose.position.y - self.current_pose.pose.position.y) ** 2
+                (pose.pose.position.x - current_x) ** 2 +
+                (pose.pose.position.y - current_y) ** 2
             )
 
             if dist >= self.lookahead_distance:
@@ -94,17 +128,17 @@ class VehicleController(Node):
 
     def pure_pursuit_control(self, target_pose):
         """
-        Pure pursuit controller to calculate steering angle.
+        Pure pursuit controller to calculate steering angle using current_state.
         Returns the required angular velocity to reach the target.
         """
-        # Transform target point to vehicle frame
-        dx = target_pose.pose.position.x - self.current_pose.pose.position.x
-        dy = target_pose.pose.position.y - self.current_pose.pose.position.y
+        # Get current position and heading from state vector
+        current_x = self.current_state['x']
+        current_y = self.current_state['y']
+        theta = self.current_state['yaw']  # Heading angle from SuperStateSpy
 
-        # Get vehicle heading from quaternion
-        q = self.current_pose.pose.orientation
-        theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        # Transform target point to vehicle frame
+        dx = target_pose.pose.position.x - current_x
+        dy = target_pose.pose.position.y - current_y
 
         # Transform to vehicle frame
         target_x = math.cos(theta) * dx + math.sin(theta) * dy
@@ -126,8 +160,8 @@ class VehicleController(Node):
         return angular_velocity
 
     def control_loop(self):
-        """Main control loop"""
-        if self.current_pose is None or self.planned_path is None:
+        """Main control loop - uses only current_state from SuperStateSpy"""
+        if self.current_state is None or self.planned_path is None:
             return
 
         # Find lookahead point
@@ -138,24 +172,41 @@ class VehicleController(Node):
         # Calculate control command
         angular_vel = self.pure_pursuit_control(target_pose)
 
-        # Publish command
-        cmd = Twist()
-        cmd.linear.x = self.target_velocity
-        cmd.angular.z = angular_vel
+        # Calculate steering angle from angular velocity
+        # For Ackermann steering: delta = atan(L * omega / v)
+        if abs(self.target_velocity) > 0.1:
+            steering_angle = math.atan2(self.wheelbase * angular_vel, self.target_velocity)
+        else:
+            steering_angle = 0.0
 
-        self.cmd_pub.publish(cmd)
+        # Saturate steering angle to reasonable limits
+        steering_angle = max(-self.max_steering, min(steering_angle, self.max_steering))
 
-        # Update vehicle heading based on angular velocity
-        # This is a simplification - in reality the vehicle simulator handles this
-        if self.current_pose is not None:
-            dt = 0.05
-            q = self.current_pose.pose.orientation
-            theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-            new_theta = theta + angular_vel * dt
+        # Publish Gazebo steering command
+        steering_msg = Float64MultiArray()
+        steering_msg.data = [steering_angle]
+        self.steering_pub.publish(steering_msg)
 
-            # Update the simulator's theta through the velocity command
-            # The simulator will integrate this
+        # Publish Gazebo velocity command (4 wheels)
+        # Convert linear velocity to wheel angular velocity: omega_wheel = v / r
+        wheel_angular_vel = self.target_velocity / self.wheel_radius
+        velocity_msg = Float64MultiArray()
+        velocity_msg.data = [wheel_angular_vel, wheel_angular_vel,
+                            wheel_angular_vel, wheel_angular_vel]
+        self.velocity_pub.publish(velocity_msg)
+
+        # Log control commands (throttled to avoid spam)
+        if hasattr(self, '_log_counter'):
+            self._log_counter += 1
+        else:
+            self._log_counter = 0
+
+        if self._log_counter % 50 == 0:  # Log every 50 cycles (~2.5 seconds at 20Hz)
+            self.get_logger().info(
+                f'Control: steering={math.degrees(steering_angle):.2f}°, '
+                f'wheel_vel={wheel_angular_vel:.2f} rad/s, '
+                f'target_vel={self.target_velocity:.2f} m/s'
+            )
 
 
 def main(args=None):

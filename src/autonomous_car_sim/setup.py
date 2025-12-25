@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'vehicle_simulator = autonomous_car_sim.vehicle_simulator:main',
+            'super_state_spy = autonomous_car_sim.super_state_spy:main',
             'path_planner = autonomous_car_sim.path_planner:main',
             'vehicle_controller = autonomous_car_sim.vehicle_controller:main',
         ],
