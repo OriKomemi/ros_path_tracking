@@ -7,9 +7,11 @@ from geometry_msgs.msg import PoseStamped
 import math
 import numpy as np
 import os
+from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
+from std_msgs.msg import Float64MultiArray
 
 
-class PathPlanner(Node):
+class Planner(Node):
     """
     Path planner that loads racing line from NPZ file or generates geometric paths.
     Default: Loads racing_line_trackdrive.npz from package data.
@@ -17,6 +19,12 @@ class PathPlanner(Node):
 
     def __init__(self):
         super().__init__('path_planner')
+        
+        # planner parameters
+        self.path_planner = PathPlanner(MissionTypes.trackdrive)
+        self.car_position = None
+        self.car_direction = None
+        self.cones = None
 
         # Declare parameters
         self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
@@ -33,6 +41,14 @@ class PathPlanner(Node):
         # Publisher
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
 
+        # Subscribers
+        self.state_sub = self.create_subscription(
+            Float64MultiArray,
+            '/robot/full_state',
+            self.state_callback,
+            10
+        )
+
         # Load racing line if needed
         self.racing_line_waypoints = None
         if self.path_type == 'racing_line':
@@ -42,6 +58,23 @@ class PathPlanner(Node):
         self.timer = self.create_timer(1.0, self.publish_path)
 
         self.get_logger().info(f'Path Planner started - using {self.path_type} path')
+
+    def state_callback(self, msg):
+        """
+        Receive full state from SuperStateSpy.
+
+        State vector layout (12 elements):
+        0: pos_x, 1: pos_y, 2: pos_z
+        3: roll, 4: pitch, 5: yaw
+        6: vel_x, 7: vel_y, 8: vel_z
+        9: acc_x, 10: acc_y, 11: acc_z
+        """
+        x = msg.data[0]
+        y = msg.data[1]
+        self.car_position = np.array([x, y])
+
+        yaw = msg.data[5]
+        self.car_direction = np.array([np.cos(yaw), np.sin(yaw)])
 
     def load_racing_line(self):
         """Load racing line waypoints from NPZ file"""
@@ -199,10 +232,38 @@ class PathPlanner(Node):
 
         return path
 
+    def generate_auto_cross_path(self):
+        path = Path()
+        path.header.frame_id = 'odom'
+        path.header.stamp = self.get_clock().now().to_msg()
+
+        # calc path
+        data = self.path_planner.calculate_path_in_global_frame(self.cones, self.car_position, self.car_direction)
+
+        # fill massage
+        for x,y in zip(data[:, 1], data[:, 2]):
+            pose = PoseStamped()
+            pose.header.frame_id = 'odom'
+            pose.header.stamp = self.get_clock().now().to_msg()
+
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 0.0
+
+            pose.pose.orientation.z = 0.0
+            pose.pose.orientation.w = 0.0
+
+            path.poses.append(pose)
+
+        return path
+
+
     def publish_path(self):
         """Publish the planned path"""
         if self.path_type == 'racing_line':
             path = self.generate_racing_line_path()
+        elif self.path_type == 'auto_cross':
+            path = self.generate_auto_cross_path()
         elif self.path_type == 'circle':
             path = self.generate_circle_path()
         elif self.path_type == 'figure8':
@@ -215,6 +276,7 @@ class PathPlanner(Node):
 
         self.path_pub.publish(path)
 
+    def planning(self)
 
 def main(args=None):
     rclpy.init(args=args)
