@@ -3,8 +3,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-
-source "$SCRIPT_DIR/.venv/bin/activate"
 source "$SCRIPT_DIR/install/setup.bash"
 
 # Launch the application

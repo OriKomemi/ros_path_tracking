@@ -11,7 +11,7 @@ setup-venv:
 	./setup_venv.sh
 
 build:
-	source /opt/ros/jazzy/setup.bash && source .venv/bin/activate && colcon build --symlink-install
+	colcon build --symlink-install 
 
 reset:
 	./reset_to_start.sh

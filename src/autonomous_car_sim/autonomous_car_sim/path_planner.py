@@ -17,8 +17,9 @@ import sys
 # from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
 from std_msgs.msg import Float64MultiArray
 
-# from bgr_description.srv import GetTrack
-# from bgr_description.msg import Cone
+from bgr_description.srv import GetTrack
+from bgr_description.msg import Cone
+ 
 
 
 class Planner(Node):
@@ -38,17 +39,18 @@ class Planner(Node):
         self.cones = None
 
         # service client to get cones
-        # self.cones_service_client = self.create_client(
-        #     GetTrack,
-        #     '/get_track'
-        # )
-        self.cones_service_client = None
+        self.cones_service_client = self.create_client(
+            GetTrack,
+            'get_track'
+        )
 
+        while not self.cones_service_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(f'service {self.cones_service_client.srv_name} not available, waiting...')
 
-        # while not self.cones_service_client.wait_for_service(timeout_sec=1.0):
-
-        #     self.get_logger().info(f'service {self.cones_service_client.srv_name} not available, waiting...')
-
+        self.req_track = GetTrack.Request()
+        self.req_track.track_name = "CompetitionMap1"
+        future = self.cones_service_client.call_async(self.req_track)
+        future.add_done_callback(self.load_cones)
 
         # Declare parameters
         self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
@@ -142,9 +144,20 @@ class Planner(Node):
             self.get_logger().warn('Falling back to circle path')
             self.path_type = 'circle'
 
-    def load_cones(self):
-        """load from service"""
-        pass
+    def load_cones(self, future):
+        try:
+            response = future.result()
+            self.cones = response.cones # list of Cone messages
+            self.get_logger().info(f'Loaded {len(self.cones)} cones from track service.')
+            print("\n\n\n\n", self.cones[0], "\n\n\n\n")
+        except Exception as e:
+            self.get_logger().error(f'Service call failed: {str(e)}')
+        
+
+
+
+
+        
 # -----------------------------------------------------------------------------
 
     def generate_racing_line_path(self):
