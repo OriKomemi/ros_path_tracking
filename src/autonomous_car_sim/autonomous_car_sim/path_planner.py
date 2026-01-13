@@ -7,8 +7,18 @@ from geometry_msgs.msg import PoseStamped
 import math
 import numpy as np
 import os
-from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
+import sys
+
+# Add the ft-fsd-path-planning directory to Python path
+# fsd_path = os.path.join(os.path.dirname(__file__), 'ft-fsd-path-planning')
+# if fsd_path not in sys.path:
+#     sys.path.insert(0, fsd_path)
+
+# from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
 from std_msgs.msg import Float64MultiArray
+
+# from bgr_description.srv import GetTrack
+# from bgr_description.msg import Cone
 
 
 class Planner(Node):
@@ -21,10 +31,24 @@ class Planner(Node):
         super().__init__('path_planner')
         
         # planner parameters
-        self.path_planner = PathPlanner(MissionTypes.trackdrive)
+        # self.path_planner = PathPlanner(MissionTypes.trackdrive)
+        self.path_planner = None
         self.car_position = None
         self.car_direction = None
         self.cones = None
+
+        # service client to get cones
+        # self.cones_service_client = self.create_client(
+        #     GetTrack,
+        #     '/get_track'
+        # )
+        self.cones_service_client = None
+
+
+        # while not self.cones_service_client.wait_for_service(timeout_sec=1.0):
+
+        #     self.get_logger().info(f'service {self.cones_service_client.srv_name} not available, waiting...')
+
 
         # Declare parameters
         self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
@@ -117,6 +141,11 @@ class Planner(Node):
             self.get_logger().error(f'Failed to load racing line: {str(e)}')
             self.get_logger().warn('Falling back to circle path')
             self.path_type = 'circle'
+
+    def load_cones(self):
+        """load from service"""
+        pass
+# -----------------------------------------------------------------------------
 
     def generate_racing_line_path(self):
         """Generate path from loaded racing line waypoints"""
@@ -257,6 +286,7 @@ class Planner(Node):
 
         return path
 
+# -----------------------------------------------------------------------------
 
     def publish_path(self):
         """Publish the planned path"""
@@ -276,11 +306,12 @@ class Planner(Node):
 
         self.path_pub.publish(path)
 
-    def planning(self)
+    def planning(self):
+        pass
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PathPlanner()
+    node = Planner()
 
     try:
         rclpy.spin(node)
