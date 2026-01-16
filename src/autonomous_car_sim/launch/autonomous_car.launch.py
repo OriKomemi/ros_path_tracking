@@ -28,7 +28,7 @@ def generate_launch_description():
 
     target_velocity_arg = DeclareLaunchArgument(
         'target_velocity',
-        default_value='5.0',
+        default_value='3.0',
         description='Target velocity for the vehicle (m/s)'
     )
 

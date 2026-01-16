@@ -6,40 +6,65 @@ from nav_msgs.msg import Path
 from std_msgs.msg import Float64MultiArray
 import math
 import numpy as np
+import osqp
+from scipy import sparse
 
 
 class VehicleController(Node):
     """
-    Pure Pursuit path-following controller for Gazebo.
+    MPC path-following controller for Gazebo.
     Uses full state from SuperStateSpy and publishes Gazebo control commands.
-    No dependency on VehicleSimulator - works directly with Gazebo odometry.
+    Uses OSQP-based Model Predictive Control for lateral control.
     """
 
     def __init__(self):
         super().__init__('vehicle_controller')
 
         # Declare parameters
-        self.declare_parameter('lookahead_distance', 5.0)
-        self.declare_parameter('target_velocity', 5.0)
-        self.declare_parameter('wheelbase', 2.5)
-        self.declare_parameter('wheel_radius', 0.3)
+        self.declare_parameter('target_velocity', 50.0)
+        self.declare_parameter('wheelbase', 1.5)
+        self.declare_parameter('wheel_radius', 0.165)  # 13-inch rim radius
         self.declare_parameter('max_steering_angle', 0.524)  # ~30 degrees
+        self.declare_parameter('max_wheel_vel', 350.0)  # rad/s
+        self.declare_parameter('mpc_horizon', 10)
+        self.declare_parameter('dt', 0.05)
+        # PID gains for velocity control
+        self.declare_parameter('pid_kp', 5.0)
+        self.declare_parameter('pid_ki', 1.0)
+        self.declare_parameter('pid_kd', 0.2)
 
         # Get parameters
-        self.lookahead_distance = self.get_parameter('lookahead_distance').value
         self.target_velocity = self.get_parameter('target_velocity').value
         self.wheelbase = self.get_parameter('wheelbase').value
         self.wheel_radius = self.get_parameter('wheel_radius').value
         self.max_steering = self.get_parameter('max_steering_angle').value
+        self.max_wheel_vel = self.get_parameter('max_wheel_vel').value
+        self.N = self.get_parameter('mpc_horizon').value
+        self.dt = self.get_parameter('dt').value
+        self.pid_kp = self.get_parameter('pid_kp').value
+        self.pid_ki = self.get_parameter('pid_ki').value
+        self.pid_kd = self.get_parameter('pid_kd').value
 
-        # Vehicle state (using only SuperStateSpy full_state, not VehicleSimulator pose)
+        # MPC weights (reduced for smoother steering)
+        self.Q = np.diag([1.0, 0.5])   # [ey, epsi] - lateral error, heading error
+        self.R = np.array([[5.0]])     # steering input weight (higher = smoother)
+
+        # PID state
+        self.vel_error_integral = 0.0
+        self.vel_error_prev = 0.0
+
+        # Vehicle state
         self.current_state = None
         self.planned_path = None
+        self._log_counter = 0
 
         # Publishers
-        # Gazebo control publishers (primary output)
-        self.steering_pub = self.create_publisher(Float64MultiArray, '/forward_position_controller/commands', 10)
-        self.velocity_pub = self.create_publisher(Float64MultiArray, '/forward_velocity_controller/commands', 10)
+        self.steering_pub = self.create_publisher(
+            Float64MultiArray, '/forward_position_controller/commands', 10
+        )
+        self.velocity_pub = self.create_publisher(
+            Float64MultiArray, '/forward_velocity_controller/commands', 10
+        )
 
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -56,9 +81,9 @@ class VehicleController(Node):
         )
 
         # Control loop timer
-        self.timer = self.create_timer(0.05, self.control_loop)
+        self.timer = self.create_timer(self.dt, self.control_loop)
 
-        self.get_logger().info('Vehicle Controller started')
+        self.get_logger().info('MPC Vehicle Controller started')
 
     def state_callback(self, msg):
         """
@@ -90,123 +115,206 @@ class VehicleController(Node):
         """Receive planned path"""
         self.planned_path = msg
 
-    def find_lookahead_point(self):
-        """Find the lookahead point on the path using current_state from SuperStateSpy"""
-        if self.current_state is None or self.planned_path is None or len(self.planned_path.poses) == 0:
-            return None
+    def compute_errors(self):
+        """Compute lateral error (ey) and heading error (epsi) from nearest path point"""
+        x = self.current_state['x']
+        y = self.current_state['y']
+        yaw = self.current_state['yaw']
 
-        # Get current position from state vector
-        current_x = self.current_state['x']
-        current_y = self.current_state['y']
+        # Find nearest path point
+        min_d = float('inf')
+        ref = None
 
-        min_dist = float('inf')
-        closest_idx = 0
+        for p in self.planned_path.poses:
+            dx = x - p.pose.position.x
+            dy = y - p.pose.position.y
+            d = dx * dx + dy * dy
+            if d < min_d:
+                min_d = d
+                ref = p
 
-        # Find closest point on path
-        for i, pose in enumerate(self.planned_path.poses):
-            dist = math.sqrt(
-                (pose.pose.position.x - current_x) ** 2 +
-                (pose.pose.position.y - current_y) ** 2
-            )
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = i
+        # Get reference yaw from path orientation
+        yaw_ref = self.yaw_from_quat(ref.pose.orientation)
 
-        # Find lookahead point
-        for i in range(closest_idx, len(self.planned_path.poses)):
-            pose = self.planned_path.poses[i]
-            dist = math.sqrt(
-                (pose.pose.position.x - current_x) ** 2 +
-                (pose.pose.position.y - current_y) ** 2
-            )
+        # Compute errors in Frenet frame
+        dx = x - ref.pose.position.x
+        dy = y - ref.pose.position.y
 
-            if dist >= self.lookahead_distance:
-                return pose
+        # Lateral error (cross-track error)
+        ey = -math.sin(yaw_ref) * dx + math.cos(yaw_ref) * dy
+        # Heading error
+        epsi = self.normalize_angle(yaw - yaw_ref)
 
-        # If no point found, return the last point
-        return self.planned_path.poses[-1]
+        return ey, epsi
 
-    def pure_pursuit_control(self, target_pose):
-        """
-        Pure pursuit controller to calculate steering angle using current_state.
-        Returns the required angular velocity to reach the target.
-        """
-        # Get current position and heading from state vector
-        current_x = self.current_state['x']
-        current_y = self.current_state['y']
-        theta = self.current_state['yaw']  # Heading angle from SuperStateSpy
+    def build_model(self, v):
+        """Build discrete-time lateral dynamics model"""
+        # State: [ey, epsi], Input: [delta]
+        # ey_dot = v * sin(epsi) ≈ v * epsi
+        # epsi_dot = v / L * tan(delta) ≈ v / L * delta
+        A = np.array([[1.0, v * self.dt],
+                      [0.0, 1.0]])
 
-        # Transform target point to vehicle frame
-        dx = target_pose.pose.position.x - current_x
-        dy = target_pose.pose.position.y - current_y
+        B = np.array([[0.0],
+                      [v * self.dt / self.wheelbase]])
+        return A, B
 
-        # Transform to vehicle frame
-        target_x = math.cos(theta) * dx + math.sin(theta) * dy
-        target_y = -math.sin(theta) * dx + math.cos(theta) * dy
+    def solve_mpc(self, A, B, ey, epsi):
+        """Solve MPC using OSQP"""
+        nx, nu = 2, 1
+        N = self.N
 
-        # Pure pursuit formula
-        alpha = math.atan2(target_y, target_x)
-        ld = math.sqrt(target_x ** 2 + target_y ** 2)
+        x0 = np.array([ey, epsi])
 
-        if ld < 0.1:
+        # Build block diagonal weight matrices
+        Qbar = sparse.block_diag([self.Q] * N)
+        Rbar = sparse.block_diag([self.R] * N)
+
+        # Build prediction matrices
+        Ax = np.zeros((nx * N, nx))
+        Bu = np.zeros((nx * N, nu * N))
+
+        for i in range(N):
+            Ai = np.linalg.matrix_power(A, i + 1)
+            Ax[i * nx:(i + 1) * nx, :] = Ai
+            for j in range(i + 1):
+                Aij = np.linalg.matrix_power(A, i - j)
+                Bu[i * nx:(i + 1) * nx, j * nu:(j + 1) * nu] = Aij @ B
+
+        # QP matrices: min 0.5 * u' * H * u + f' * u
+        H = Bu.T @ Qbar @ Bu + Rbar
+        f = Bu.T @ Qbar @ (Ax @ x0)
+
+        # Steering constraints
+        Aineq = sparse.eye(N)
+        l = -self.max_steering * np.ones(N)
+        u = self.max_steering * np.ones(N)
+
+        # Solve QP
+        solver = osqp.OSQP()
+        solver.setup(
+            P=sparse.csc_matrix(H),
+            q=f,
+            A=Aineq,
+            l=l,
+            u=u,
+            verbose=False
+        )
+
+        res = solver.solve()
+
+        if res.info.status != 'solved':
+            self.get_logger().warn('OSQP failed to solve')
             return 0.0
 
-        # Steering angle
-        delta = math.atan2(2.0 * self.wheelbase * math.sin(alpha), ld)
+        return res.x[0]
 
-        # Convert to angular velocity (simplified)
-        angular_velocity = (2.0 * self.target_velocity * math.sin(alpha)) / ld
+    def velocity_pid_control(self, current_speed):
+        """PID controller for velocity tracking"""
+        # Compute error
+        vel_error = self.target_velocity - current_speed
 
-        return angular_velocity
+        # Integral term with anti-windup
+        self.vel_error_integral += vel_error * self.dt
+        max_integral = self.max_wheel_vel / (self.pid_ki + 1e-6)
+        self.vel_error_integral = np.clip(
+            self.vel_error_integral, -max_integral, max_integral
+        )
+
+        # Derivative term
+        vel_error_derivative = (vel_error - self.vel_error_prev) / self.dt
+        self.vel_error_prev = vel_error
+
+        # PID output (desired linear velocity adjustment)
+        vel_cmd = (
+            self.pid_kp * vel_error +
+            self.pid_ki * self.vel_error_integral +
+            self.pid_kd * vel_error_derivative
+        )
+
+        # Convert to wheel angular velocity and add feedforward
+        feedforward = self.target_velocity / self.wheel_radius
+        wheel_angular_vel = feedforward + vel_cmd / self.wheel_radius
+
+        # Clamp to limits
+        wheel_angular_vel = float(np.clip(wheel_angular_vel, 0.0, self.max_wheel_vel))
+
+        return wheel_angular_vel, vel_error
 
     def control_loop(self):
-        """Main control loop - uses only current_state from SuperStateSpy"""
-        if self.current_state is None or self.planned_path is None:
+        """Main MPC control loop"""
+        # Always publish velocity even without path (allows car to start moving)
+        if self.current_state is None:
             return
 
-        # Find lookahead point
-        target_pose = self.find_lookahead_point()
-        if target_pose is None:
+        # If no path yet, just drive straight with PID velocity control
+        if self.planned_path is None or len(self.planned_path.poses) == 0:
+            # Publish zero steering
+            steering_msg = Float64MultiArray()
+            steering_msg.data = [0.0]
+            self.steering_pub.publish(steering_msg)
+
+            # PID velocity control
+            current_speed = self.current_state['speed']
+            wheel_angular_vel, _ = self.velocity_pid_control(current_speed)
+
+            velocity_msg = Float64MultiArray()
+            velocity_msg.data = [wheel_angular_vel] * 4
+            self.velocity_pub.publish(velocity_msg)
             return
 
-        # Calculate control command
-        angular_vel = self.pure_pursuit_control(target_pose)
+        # Use target velocity for model (allows starting from rest)
+        v = max(self.current_state['speed'], self.target_velocity * 0.5)
 
-        # Calculate steering angle from angular velocity
-        # For Ackermann steering: delta = atan(L * omega / v)
-        if abs(self.target_velocity) > 0.1:
-            steering_angle = math.atan2(self.wheelbase * angular_vel, self.target_velocity)
-        else:
-            steering_angle = 0.0
+        # Compute tracking errors
+        ey, epsi = self.compute_errors()
 
-        # Saturate steering angle to reasonable limits
-        steering_angle = max(-self.max_steering, min(steering_angle, self.max_steering))
+        # Build linearized model
+        A, B = self.build_model(v)
 
-        # Publish Gazebo steering command
+        # Solve MPC for optimal steering
+        steering_angle = self.solve_mpc(A, B, ey, epsi)
+
+        # Publish steering command
         steering_msg = Float64MultiArray()
-        steering_msg.data = [steering_angle]
+        steering_msg.data = [float(steering_angle)]
         self.steering_pub.publish(steering_msg)
 
-        # Publish Gazebo velocity command (4 wheels)
-        # Convert linear velocity to wheel angular velocity: omega_wheel = v / r
-        wheel_angular_vel = self.target_velocity / self.wheel_radius
+        # PID velocity control
+        current_speed = self.current_state['speed']
+        wheel_angular_vel, vel_error = self.velocity_pid_control(current_speed)
+
+        # Publish velocity command (4 wheels)
         velocity_msg = Float64MultiArray()
-        velocity_msg.data = [wheel_angular_vel, wheel_angular_vel,
-                            wheel_angular_vel, wheel_angular_vel]
+        velocity_msg.data = [wheel_angular_vel] * 4
         self.velocity_pub.publish(velocity_msg)
 
-        # Log control commands (throttled to avoid spam)
-        if hasattr(self, '_log_counter'):
-            self._log_counter += 1
-        else:
-            self._log_counter = 0
-
-        if self._log_counter % 50 == 0:  # Log every 50 cycles (~2.5 seconds at 20Hz)
+        # Throttled logging
+        self._log_counter += 1
+        if self._log_counter % 50 == 0:
             self.get_logger().info(
-                f'Control: steering={math.degrees(steering_angle):.2f}°, '
-                f'wheel_vel={wheel_angular_vel:.2f} rad/s, '
-                f'target_vel={self.target_velocity:.2f} m/s'
+                f'MPC Control: steering={math.degrees(steering_angle):.2f}°, '
+                f'ey={ey:.3f}m, epsi={math.degrees(epsi):.2f}°, '
+                f'vel={current_speed:.2f}/{self.target_velocity:.2f} m/s, '
+                f'wheel_vel={wheel_angular_vel:.2f} rad/s'
             )
+
+    @staticmethod
+    def yaw_from_quat(q):
+        """Extract yaw angle from quaternion"""
+        return math.atan2(
+            2 * (q.w * q.z + q.x * q.y),
+            1 - 2 * (q.y * q.y + q.z * q.z)
+        )
+
+    @staticmethod
+    def normalize_angle(a):
+        """Normalize angle to [-pi, pi]"""
+        while a > math.pi:
+            a -= 2 * math.pi
+        while a < -math.pi:
+            a += 2 * math.pi
+        return a
 
 
 def main(args=None):
