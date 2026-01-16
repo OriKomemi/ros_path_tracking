@@ -17,8 +17,8 @@ import sys
 # from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
 from std_msgs.msg import Float64MultiArray
 
-from bgr_description.srv import GetTrack
-from bgr_description.msg import Cone
+# from bgr_description.srv import GetTrack
+# from bgr_description.msg import Cone
  
 
 
@@ -38,19 +38,19 @@ class Planner(Node):
         self.car_direction = None
         self.cones = None
 
-        # service client to get cones
-        self.cones_service_client = self.create_client(
-            GetTrack,
-            'get_track'
-        )
+        # # service client to get cones
+        # self.cones_service_client = self.create_client(
+        #     GetTrack,
+        #     'get_track'
+        # )
 
-        while not self.cones_service_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(f'service {self.cones_service_client.srv_name} not available, waiting...')
+        # while not self.cones_service_client.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info(f'service {self.cones_service_client.srv_name} not available, waiting...')
 
-        self.req_track = GetTrack.Request()
-        self.req_track.track_name = "CompetitionMap1"
-        future = self.cones_service_client.call_async(self.req_track)
-        future.add_done_callback(self.load_cones)
+        # self.req_track = GetTrack.Request()
+        # self.req_track.track_name = "CompetitionMap1"
+        # future = self.cones_service_client.call_async(self.req_track)
+        # future.add_done_callback(self.load_cones)
 
         # Declare parameters
         self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
