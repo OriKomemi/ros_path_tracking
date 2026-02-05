@@ -26,7 +26,7 @@ class VehicleController(Node):
         self.declare_parameter('wheel_radius', 0.165)  # 13-inch rim radius
         self.declare_parameter('max_steering_angle', 0.524)  # ~30 degrees
         self.declare_parameter('max_wheel_vel', 350.0)  # rad/s
-        self.declare_parameter('mpc_horizon', 10)
+        self.declare_parameter('mpc_horizon', 8)
         self.declare_parameter('dt', 0.05)
         # PID gains for velocity control
         self.declare_parameter('pid_kp', 5.0)
@@ -46,8 +46,8 @@ class VehicleController(Node):
         self.pid_kd = self.get_parameter('pid_kd').value
 
         # MPC weights (reduced for smoother steering)
-        self.Q = np.diag([1.0, 0.5])   # [ey, epsi] - lateral error, heading error
-        self.R = np.array([[5.0]])     # steering input weight (higher = smoother)
+        self.Q = np.diag([3.0, 1.0])   # [ey, epsi] - lateral error, heading error
+        self.R = np.array([[1.5]])     # steering input weight (higher = smoother)
 
         # PID state
         self.vel_error_integral = 0.0
