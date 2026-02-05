@@ -1,0 +1,12 @@
+vehicle_controller:
+  ros__parameters:
+    wheelbase: 2.0368
+    wheel_radius: 0.24
+    max_steering_angle: 0.524
+    control_dt: 0.05
+
+    # numerical safety
+    kappa_eps: 1e-4
+
+    # v_min is almost always shared
+    v_min: 1.0
