@@ -17,5 +17,5 @@ reset:
 	./reset_to_start.sh
 
 launch:
-	./launch_with_venv.sh
+	./launch.sh
 	

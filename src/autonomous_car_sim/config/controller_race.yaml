@@ -1,0 +1,14 @@
+vehicle_controller:
+  ros__parameters:
+    v_max: 20.0
+    a_lat_max: 7.0
+    speed_rate_limit: 4.0
+
+    lookahead_min: 4.0
+    lookahead_max: 28.0
+    lookahead_speed_gain: 1.6
+    lookahead_curv_gain: 10.0
+
+    pid_kp: 1.8
+    pid_ki: 0.02
+    pid_kd: 0.10

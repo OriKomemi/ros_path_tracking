@@ -1,94 +1,68 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """
-    Launch file for autonomous car with Gazebo.
-    Uses Gazebo for simulation, SuperStateSpy for state, and controller for commands.
-    No VehicleSimulator needed - works directly with Gazebo odometry.
-    """
-
-    # Declare launch arguments
-    path_type_arg = DeclareLaunchArgument(
-        'path_type',
-        default_value='racing_line',
-        description='Type of path to use (racing_line, circle, figure8, straight)'
+    # ----------------------------
+    # Launch arguments (presets)
+    # ----------------------------
+    planner_preset_arg = DeclareLaunchArgument(
+        'planner_preset',
+        default_value='racing',  # racing | circle | figure8 | straight
+        description='Planner preset name (maps to config/planner_<name>.yaml)'
     )
 
-    radius_arg = DeclareLaunchArgument(
-        'radius',
-        default_value='20.0',
-        description='Radius of the path (meters)'
+    controller_preset_arg = DeclareLaunchArgument(
+        'controller_preset',
+        default_value='safe',  # safe | fast | race
+        description='Controller preset name (maps to config/controller_<name>.yaml)'
     )
 
-    target_velocity_arg = DeclareLaunchArgument(
-        'target_velocity',
-        default_value='10.0',
-        description='Target velocity for the vehicle (m/s)'
-    )
+    planner_preset = LaunchConfiguration('planner_preset')
+    controller_preset = LaunchConfiguration('controller_preset')
 
-    lookahead_distance_arg = DeclareLaunchArgument(
-        'lookahead_distance',
-        default_value='5.0',
-        description='Lookahead distance for pure pursuit controller (meters)'
-    )
+    pkg_share = FindPackageShare('autonomous_car_sim')
 
-    # Get launch configurations
-    path_type = LaunchConfiguration('path_type')
-    radius = LaunchConfiguration('radius')
-    target_velocity = LaunchConfiguration('target_velocity')
-    lookahead_distance = LaunchConfiguration('lookahead_distance')
+    # ----------------------------
+    # Param files (best practice: base + overlay)
+    # ----------------------------
+    controller_base_yaml = PathJoinSubstitution([pkg_share, 'config', 'controller_base.yaml'])
+    controller_yaml = PathJoinSubstitution([pkg_share, 'config', ['controller_', controller_preset, '.yaml']])
 
-    # SuperStateSpy Node - Processes Gazebo odometry and publishes full state
-    super_state_spy = Node(
-        package='autonomous_car_sim',
-        executable='super_state_spy',
-        name='super_state_spy',
-        output='screen',
-        parameters=[{
-            'use_sim_time': False,
-        }]
-    )
+    planner_yaml = PathJoinSubstitution([pkg_share, 'config', ['planner_', planner_preset, '.yaml']])
 
-    # Path Planner Node
+    # ----------------------------
+    # Nodes
+    # ----------------------------
     path_planner = Node(
         package='autonomous_car_sim',
         executable='path_planner',
         name='path_planner',
         output='screen',
-        parameters=[{
-            'path_type': path_type,
-            'radius': radius,
-            'num_points': 100,
-            'use_sim_time': False,
-        }]
+        parameters=[
+            planner_yaml
+        ],
     )
 
-    # Vehicle Controller Node
     vehicle_controller = Node(
         package='autonomous_car_sim',
         executable='vehicle_controller',
         name='vehicle_controller',
         output='screen',
-        parameters=[{
-            'lookahead_distance': lookahead_distance,
-            'target_velocity': target_velocity,
-            'wheelbase': 2.5,
-            'use_sim_time': False,
-        }]
+        parameters=[
+            controller_base_yaml,
+            controller_yaml,
+        ],
     )
 
     return LaunchDescription([
-        path_type_arg,
-        radius_arg,
-        target_velocity_arg,
-        lookahead_distance_arg,
-        super_state_spy,
+        planner_preset_arg,
+        controller_preset_arg,
         path_planner,
         vehicle_controller,
     ])
