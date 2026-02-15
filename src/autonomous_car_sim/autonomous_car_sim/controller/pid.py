@@ -20,9 +20,11 @@ class PID:
     def update(self, error: float, dt: float) -> float:
         if dt <= 1e-6:
             return 0.0
-
+        prev_integral = self.integral
         self.integral = clamp(self.integral + error * dt, self.i_min, self.i_max)
         d_err = 0.0 if self.prev_error is None else (error - self.prev_error) / dt
         self.prev_error = error
+        if prev_integral*self.integral < 0.0:
+            self.integral = 0.0
 
         return self.kp * error + self.ki * self.integral + self.kd * d_err

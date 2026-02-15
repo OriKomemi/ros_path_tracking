@@ -12,3 +12,5 @@ vehicle_controller:
     pid_kp: 1.8
     pid_ki: 0.02
     pid_kd: 0.10
+
+    torque_const: 0.5 #Controls the gain of the torque vectoring effect. Higher values will result in more aggressive torque distribution based on steering angle and speed.

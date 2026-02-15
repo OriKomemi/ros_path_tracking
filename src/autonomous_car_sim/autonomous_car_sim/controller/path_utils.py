@@ -56,6 +56,28 @@ def curvature_at_index(path: Path, idx: int) -> float:
 
     return curvature_from_three_points((p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y))
 
+def mean_curvature_at_index(path: Path, current_index:int, target_index: int, static_lookahead_curv: int = 0.0) -> float:
+    n = len(path.poses)
+    if static_lookahead_curv > 0:
+        lookahead = static_lookahead_curv
+    else:
+        lookahead = target_index - current_index
+        if lookahead < 0:
+            lookahead = target_index + n - current_index
+    if n < 3:
+        return 0.0
+    if lookahead < 3:
+        return curvature_at_index(path, target_index)
+    
+    sum_curvature = 0.0
+    for i in range(lookahead-2):
+        idx = i+current_index-1
+        if idx >= n:
+            idx = idx - n
+        sum_curvature += curvature_at_index(path, idx)
+    return sum_curvature / (lookahead-2)
+
+
 
 def find_lookahead_point(x: float, y: float, path: Path, lookahead_distance: float) -> Tuple[Optional[object], Optional[int]]:
     if not path.poses:
@@ -91,3 +113,15 @@ def pure_pursuit_delta(
 
     alpha = math.atan2(ty, tx)
     return math.atan2(2.0 * wheelbase * math.sin(alpha), ld)
+
+
+def torque_vectoring(
+    steering_angle: float,
+    v: float,
+    torque_const: float = 1.0
+) :
+    
+    right_side = v + (torque_const*math.sin(steering_angle))
+    left_side = v - (torque_const*math.sin(steering_angle))
+
+    return [right_side, left_side, right_side, left_side] 

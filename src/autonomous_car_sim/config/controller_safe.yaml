@@ -14,3 +14,6 @@ vehicle_controller:
     pid_kd: 0.05
     pid_i_min: -3.0
     pid_i_max: 3.0
+
+    static_lookahead_curv: 6.0 #Controls how much points it takes to calculate curvature o smooth target speed
+    torque_const: 5.0 #Controls the gain of the torque vectoring effect. Higher values will result in more aggressive torque distribution based on steering angle and speed.

@@ -27,6 +27,8 @@ def declare_params(node: Node) -> None:
             ('a_lat_max', 3.0),
             ('kappa_eps', 1e-4),
             ('speed_rate_limit', 2.0),
+            ('torque_const', 0.5),
+            ('static_lookahead_curv', 5.0),
 
             # PID
             ('pid_kp', 1.2),
@@ -38,6 +40,11 @@ def declare_params(node: Node) -> None:
             # Loop + logging
             ('control_dt', 0.05),
             ('log_period_s', 2.5),
+            # Plotting / debugging
+            ('plot_smooth_alpha', 0.3),
+            ('plot_tgt_smooth_alpha', 0.1),
+            ('plot_interp', True),
+            ('plot_interp_points', 200),
         ]
     )
 
@@ -64,6 +71,8 @@ def load_params(node: Node) -> dict:
         'a_lat_max': p('a_lat_max'),
         'kappa_eps': p('kappa_eps'),
         'speed_rate_limit': p('speed_rate_limit'),
+        'torque_const': p('torque_const'),
+        'static_lookahead_curv': p('static_lookahead_curv'),
 
         'pid_kp': p('pid_kp'),
         'pid_ki': p('pid_ki'),
@@ -73,4 +82,8 @@ def load_params(node: Node) -> dict:
 
         'control_dt': p('control_dt'),
         'log_period_s': p('log_period_s'),
+        'plot_smooth_alpha': p('plot_smooth_alpha'),
+        'plot_tgt_smooth_alpha': p('plot_tgt_smooth_alpha'),
+        'plot_interp': node.get_parameter('plot_interp').value,
+        'plot_interp_points': int(node.get_parameter('plot_interp_points').value),
     }
