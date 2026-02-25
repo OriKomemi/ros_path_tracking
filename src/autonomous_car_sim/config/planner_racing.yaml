@@ -1,4 +1,4 @@
 path_planner:
   ros__parameters:
-    path_type: racing_line
+    path_type: auto_cross
     num_points: 200

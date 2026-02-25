@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 
+from ast import Add
+
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Path
+from sensor_msgs.msg import PointCloud2
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseStamped
 import math
 import numpy as np
 import os
 import sys
+import matplotlib.pyplot as plt
 
 # Add the ft-fsd-path-planning directory to Python path
-# fsd_path = os.path.join(os.path.dirname(__file__), 'ft-fsd-path-planning')
-# if fsd_path not in sys.path:
-#     sys.path.insert(0, fsd_path)
+#change to parent directory of this file
+fsd_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ft-fsd-path-planning')
+if fsd_path not in sys.path:
+    sys.path.insert(0, fsd_path)
 
-# from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
+from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
 from std_msgs.msg import Float64MultiArray
+
 
 # from bgr_description.srv import GetTrack
 # from bgr_description.msg import Cone
@@ -27,17 +34,18 @@ class Planner(Node):
     Path planner that loads racing line from NPZ file or generates geometric paths.
     Default: Loads racing_line_trackdrive.npz from package data.
     """
-
     def __init__(self):
         super().__init__('path_planner')
         
+
         # planner parameters
-        # self.path_planner = PathPlanner(MissionTypes.trackdrive)
-        self.path_planner = None
+        self.path_planner = PathPlanner(MissionTypes.trackdrive)
+        # self.path_planner = None
         self.car_position = None
         self.car_direction = None
         self.cones = None
-
+        self.lidar_detections: PointCloud2 = None
+        self.lidar_cones = None
         # # service client to get cones
         # self.cones_service_client = self.create_client(
         #     GetTrack,
@@ -75,6 +83,30 @@ class Planner(Node):
             10
         )
 
+        self.state_sub = self.create_subscription(
+            PointCloud2,
+            '/lidar/detections',
+            self.lidar_detection_callback,
+            qos_profile_sensor_data
+        )
+
+
+        
+        self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        plt.ion()
+        self.path_line, = self.ax.plot([], [], 'b-', linewidth=2, label='Path')
+        self.cone_unknown_sc = self.ax.scatter([], [], c='gray', s=30, label='Unknown cones', zorder=5)
+        self.cone_left_sc = self.ax.scatter([], [], c='yellow', s=40, edgecolors='black', label='Left cones', zorder=5)
+        self.cone_right_sc = self.ax.scatter([], [], c='blue', s=40, label='Right cones', zorder=5)
+        self.car_marker, = self.ax.plot([], [], 'r^', markersize=10, label='Car', zorder=6)
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_title("Auto Cross Path")
+        self.ax.grid(True)
+        self.ax.set_aspect('equal', adjustable='box')
+        self.ax.legend(loc='upper right')
+        plt.show(block=False)
+
         # Load racing line if needed
         self.racing_line_waypoints = None
         if self.path_type == 'racing_line':
@@ -102,6 +134,61 @@ class Planner(Node):
         yaw = msg.data[5]
         self.car_direction = np.array([np.cos(yaw), np.sin(yaw)])
 
+    def lidar_detection_callback(self, msg: PointCloud2):
+        n = msg.width * msg.height
+        if n == 0:
+            return  # no detections — keep lidar_cones as-is so the car won't start driving
+        step = msg.point_step
+        raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(n, step)
+        # x is at byte offset 0, y at byte offset 4 — grab exactly those 8 bytes
+        # regardless of point_step (avoids wrong reshape when step != 12)
+        if self.car_position is None:
+            self.get_logger().warn('Received lidar detections but car position is unknown, ignoring.')
+            return
+        car_xy = np.array(self.car_position[:2], dtype=np.float32)
+
+        # Extract XY from raw lidar points
+        xy = raw[:, :8].view(np.float32).reshape(n, 2).copy()
+
+        # Add car position safely
+        xy += car_xy
+
+
+        cones_by_type = [np.zeros((0, 2)) for _ in range(len(ConeTypes))] # the outer list has 5 elements, one for each ConeTypes, then each element is an array of shape (N, 2)
+        cones_by_type[ConeTypes.LEFT] = np.array([])
+        cones_by_type[ConeTypes.RIGHT] = np.array([])
+        cones_by_type[ConeTypes.START_FINISH_LINE] = np.array([])
+        cones_by_type[ConeTypes.START_FINISH_AREA] = np.array([])
+        cones_by_type[ConeTypes.UNKNOWN] = np.array(xy)
+        self.get_logger().info(f'Received lidar detection: {len(xy)} points')
+        self.lidar_cones = cones_by_type
+
+        # Update cone scatter plot immediately on new lidar data
+        def _set(sc, arr):
+            if arr is not None and arr.ndim == 2 and len(arr) > 0:
+                sc.set_offsets(arr)
+            else:
+                sc.set_offsets(np.empty((0, 2)))
+
+        _set(self.cone_unknown_sc, self.lidar_cones[ConeTypes.UNKNOWN])
+        _set(self.cone_left_sc,    self.lidar_cones[ConeTypes.LEFT])
+        _set(self.cone_right_sc,   self.lidar_cones[ConeTypes.RIGHT])
+        if self.car_position is not None:
+            self.car_marker.set_xdata([self.car_position[0]])
+            self.car_marker.set_ydata([self.car_position[1]])
+
+        # ax.relim() ignores scatter (PathCollection) — compute bounds manually
+        all_pts = [xy]
+        if self.car_position is not None:
+            all_pts.append(self.car_position.reshape(1, 2))
+        pts = np.vstack(all_pts)
+        pad = 5.0
+        self.ax.set_xlim(pts[:, 0].min() - pad, pts[:, 0].max() + pad)
+        self.ax.set_ylim(pts[:, 1].min() - pad, pts[:, 1].max() + pad)
+        self.fig.canvas.draw_idle()
+
+
+      
     def load_racing_line(self):
         """Load racing line waypoints from NPZ file"""
         try:
@@ -278,28 +365,63 @@ class Planner(Node):
         path = Path()
         path.header.frame_id = 'odom'
         path.header.stamp = self.get_clock().now().to_msg()
+        
+        if self.lidar_cones is None or self.car_position is None or self.car_direction is None:
+            return path
 
-        # calc path
-        data = self.path_planner.calculate_path_in_global_frame(self.cones, self.car_position, self.car_direction)
+        # Don't plan until we have actual cone detections
+        unknown_cones = self.lidar_cones[ConeTypes.UNKNOWN]
+        if unknown_cones is None or len(unknown_cones) == 0:
+            return path
 
-        # fill massage
-        for x,y in zip(data[:, 1], data[:, 2]):
+        data = self.path_planner.calculate_path_in_global_frame(
+            self.lidar_cones,
+            self.car_position,
+            self.car_direction
+        ) 
+
+        # Extract XY
+        x_vals = data[:, 1]
+        y_vals = data[:, 2]
+
+        # Update path line
+        self.path_line.set_xdata(x_vals)
+        self.path_line.set_ydata(y_vals)
+
+        # Update cone scatter plots
+        def _set_scatter(sc, arr):
+            if arr is not None and arr.ndim == 2 and len(arr) > 0:
+                sc.set_offsets(arr)
+            else:
+                sc.set_offsets(np.empty((0, 2)))
+
+        _set_scatter(self.cone_unknown_sc, self.lidar_cones[ConeTypes.UNKNOWN])
+        _set_scatter(self.cone_left_sc, self.lidar_cones[ConeTypes.LEFT])
+        _set_scatter(self.cone_right_sc, self.lidar_cones[ConeTypes.RIGHT])
+
+        # Update car position
+        if self.car_position is not None:
+            self.car_marker.set_xdata([self.car_position[0]])
+            self.car_marker.set_ydata([self.car_position[1]])
+
+        self.fig.canvas.draw_idle()
+
+        for x, y in zip(x_vals, y_vals):
             pose = PoseStamped()
             pose.header.frame_id = 'odom'
             pose.header.stamp = self.get_clock().now().to_msg()
 
-            pose.pose.position.x = x
-            pose.pose.position.y = y
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
             pose.pose.position.z = 0.0
 
             pose.pose.orientation.z = 0.0
-            pose.pose.orientation.w = 0.0
+            pose.pose.orientation.w = 1.0  # ← fix: valid quaternion
 
             path.poses.append(pose)
 
         return path
 
-# -----------------------------------------------------------------------------
 
     def publish_path(self):
         """Publish the planned path"""
@@ -327,10 +449,13 @@ def main(args=None):
     node = Planner()
 
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.05)
+            plt.pause(0.05)
     except KeyboardInterrupt:
         pass
     finally:
+        plt.close('all')
         node.destroy_node()
         rclpy.shutdown()
 

@@ -272,7 +272,6 @@ class VehicleController(Node):
         dv = clamp(a_cmd * self.cfg['control_dt'], -dv_max, dv_max)
 
         self.v_cmd = clamp(self.v_cmd + dv, 0.0, self.cfg['v_max'])
-
         self._publish_commands(steering_angle, self.v_cmd)
 
         # Record speeds for plotting (safe if plotting disabled)
