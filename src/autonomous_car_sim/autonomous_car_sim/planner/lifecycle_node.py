@@ -4,7 +4,7 @@ from ast import Add
 
 import rclpy
 # from rclpy.node import Node
-from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn, Node
 from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
@@ -91,67 +91,55 @@ class Planner(LifecycleNode):
 
     def on_configure(self, state :LifecycleState) -> TransitionCallbackReturn: # lifecyclestate is the current state before transition, return value is whether the transition succeeded
         self.get_logger().info('Configuring Path Planner...')
-        # initialize fields
-        self.path_planner = PathPlanner(MissionTypes.trackdrive)
-
-        # Get parameters
-        self.path_type = self.get_parameter('path_type').value
-        self.racing_line_file = self.get_parameter('racing_line_file').value
-        self.radius = self.get_parameter('radius').value
-        self.num_points = self.get_parameter('num_points').value
-
-        # Load racing line if needed
-        if self.path_type == 'racing_line':
-            self.load_racing_line()
-
-        # Publisher - create publisher and timer at 1 Hz
-        self.path_pub = self.create_lifecycle_publisher(Path, '/planned_path', 10)
-        self.timer = self.create_timer(1.0, self.publish_path)
-        self.timer.cancel() # don't start timer until activated
         
-        # Subscribers
-        self.state_sub = self.create_subscription(
-            Float64MultiArray,
-            '/robot/full_state',
-            self.state_callback,
-            10
-        )
+        try:
+            # initialize fields
+            self.path_planner = PathPlanner(MissionTypes.trackdrive)
 
-        self.lidar_sub = self.create_subscription(
-            PointCloud2,
-            '/lidar/detections',
-            self.lidar_detection_callback,
-            qos_profile_sensor_data
-        )
+            # Get parameters
+            self.path_type = self.get_parameter('path_type').value
+            self.racing_line_file = self.get_parameter('racing_line_file').value
+            self.radius = self.get_parameter('radius').value
+            self.num_points = self.get_parameter('num_points').value
 
-        self.get_logger().info(f'Path Planner configured - using {self.path_type} path')
+            # Load racing line if needed
+            if self.path_type == 'racing_line':
+                self.load_racing_line()
 
-        return TransitionCallbackReturn.SUCCESS # success moves to inactive, failure stays in unconfigured
-        # should I call super instead? no, super just returns success without doing anything, so we can skip it and do our own thing
+            # Publisher - create publisher and timer at 1 Hz
+            self.path_pub = self.create_lifecycle_publisher(Path, '/planned_path', 10)
+            self.timer = self.create_timer(1.0, self.publish_path)
+            self.timer.cancel() # don't start timer until activated
+        
+            # Subscribers
+            self.state_sub = self.create_subscription(
+                Float64MultiArray,
+                '/robot/full_state',
+                self.state_callback,
+                10
+            )
+
+            self.lidar_sub = self.create_subscription(
+                PointCloud2,
+                '/lidar/detections',
+                self.lidar_detection_callback,
+                qos_profile_sensor_data
+            )
+
+            self.get_logger().info(f'Path Planner configured - using {self.path_type} path')
+
+            return TransitionCallbackReturn.SUCCESS # success moves to inactive, failure stays in unconfigured
+            # should I call super instead? no, super just returns success without doing anything, so we can skip it and do our own thing
+
+        except Exception as e:
+            self.get_logger().error(f'Configuration failed: {e}')
+            return TransitionCallbackReturn.FAILURE
 
     def on_cleanup(self, state :LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Cleaning up Path Planner...')
 
         try:
-            # Stop timer first
-            if self.timer is not None:
-                self.timer.cancel()
-                self.destroy_timer(self.timer)
-                self.timer = None 
-
-            # Destroy publisher
-            if self.path_pub is not None:
-                self.destroy_lifecycle_publisher(self.path_pub)
-                self.path_pub = None
-            
-            # Destroy subscriptions
-            if self.state_sub is not None:
-                self.destroy_subscription(self.state_sub)
-                self.state_sub = None
-
-            if self.lidar_sub is not None:
-                self.destroy_subscription(self.lidar_sub)
-                self.lidar_sub = None
+            self._destroy_resources()
             
             # Reset configured/runtime data
             self.path_planner = None
@@ -175,14 +163,17 @@ class Planner(LifecycleNode):
             self.get_logger().error(f'Cleanup failed: {e}')
             return TransitionCallbackReturn.FAILURE
     
-    def on_activate(self, state :LifecycleState) -> TransitionCallbackReturn:
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Activating Path Planner...')
+
+        result = super().on_activate(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
 
         if self.timer is not None:
             self.timer.reset()
 
-        # activate lifecycle publishers (subscriptions and timers are always active in lifecycle nodes, so no need to activate them)
-        return super().on_activate(state) 
+        return TransitionCallbackReturn.SUCCESS
     
     def on_deactivate(self, state :LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Deactivating Path Planner...')
@@ -194,28 +185,13 @@ class Planner(LifecycleNode):
     
     def on_shutdown(self, state :LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Shutting down Path Planner...')
-        
-        self.destroy_lifecycle_publisher(self.path_pub)
-        self.destroy_subscription(self.state_sub)
-        self.destroy_subscription(self.lidar_sub)
-        self.destroy_timer(self.timer) 
 
         try:
-                # Stop timer first
-            if self.timer is not None:
-                self.timer.cancel()
-                self.destroy_timer(self.timer)
-
-            # Destroy publisher
-            if self.path_pub is not None:
-                self.destroy_lifecycle_publisher(self.path_pub)
-            
-            # Destroy subscriptions
-            if self.state_sub is not None:
-                self.destroy_subscription(self.state_sub)
-
-            if self.lidar_sub is not None:
-                self.destroy_subscription(self.lidar_sub)
+            self._destroy_resources()            
+        
+            result = super().on_shutdown(state)
+            if result != TransitionCallbackReturn.SUCCESS:
+                return result
         
             return TransitionCallbackReturn.SUCCESS
         
@@ -223,6 +199,28 @@ class Planner(LifecycleNode):
             self.get_logger().error(f'Shutdown failed: {e}')
             return TransitionCallbackReturn.FAILURE
 
+
+    def _destroy_resources(self):
+        # Stop timer first
+        if self.timer is not None:
+            self.timer.cancel()
+            self.destroy_timer(self.timer)
+            self.timer = None
+
+        # Destroy publisher
+        if self.path_pub is not None:
+            self.destroy_lifecycle_publisher(self.path_pub)
+            self.path_pub = None
+
+        # Destroy subscriptions
+        if self.state_sub is not None:
+            self.destroy_subscription(self.state_sub)
+            self.state_sub = None
+
+        if self.lidar_sub is not None:
+            self.destroy_subscription(self.lidar_sub)
+            self.lidar_sub = None
+            
     def state_callback(self, msg):
         """
         Receive full state from SuperStateSpy.
@@ -233,6 +231,9 @@ class Planner(LifecycleNode):
         6: vel_x, 7: vel_y, 8: vel_z
         9: acc_x, 10: acc_y, 11: acc_z
         """
+        if not self._is_active:
+            return # ignore state updates when not active
+
         x = msg.data[0]
         y = msg.data[1]
         self.car_position = np.array([x, y])
@@ -241,6 +242,9 @@ class Planner(LifecycleNode):
         self.car_direction = np.array([np.cos(yaw), np.sin(yaw)])
 
     def lidar_detection_callback(self, msg: PointCloud2):
+        if not self._is_active:
+            return # ignore lidar updates when not active
+        
         n = msg.width * msg.height
         if n == 0:
             return  # no detections — keep lidar_cones as-is so the car won't start driving
