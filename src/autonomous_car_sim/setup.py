@@ -25,9 +25,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'path_planner = autonomous_car_sim.planner.lifecycle_node:main',
+            'path_planner = autonomous_car_sim.planner.node:main',
             'vehicle_controller = autonomous_car_sim.controller.node:main',
             'reset_position = autonomous_car_sim.reset_position:main',
+            'lifecycle_manager = autonomous_car_sim.planner.lifecycle_manager:main',
         ],
     },
 )

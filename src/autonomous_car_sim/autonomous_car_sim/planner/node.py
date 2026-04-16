@@ -3,7 +3,8 @@
 from ast import Add
 
 import rclpy
-from rclpy.node import Node
+# from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn, Node
 from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
@@ -29,23 +30,35 @@ from std_msgs.msg import Float64MultiArray
  
 
 
-class Planner(Node):
+class Planner(LifecycleNode):
     """
     Path planner that loads racing line from NPZ file or generates geometric paths.
     Default: Loads racing_line_trackdrive.npz from package data.
     """
     def __init__(self):
-        super().__init__('path_planner')
-        
+        super().__init__('path_planner')    
+        self.get_logger().info('Initializing Path Planner lifecycle node...')    
 
         # planner parameters
-        self.path_planner = PathPlanner(MissionTypes.trackdrive)
-        # self.path_planner = None
+        self.path_planner = None
         self.car_position = None
         self.car_direction = None
         self.cones = None
         self.lidar_detections: PointCloud2 = None
         self.lidar_cones = None
+        self.cone_service_client = None
+        self.path_pub = None
+        self.timer = None
+        self.state_sub = None
+        self.lidar_sub = None
+        self.racing_line_waypoints = None # load racing line if needed
+        
+        # Declare parameters
+        self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
+        self.declare_parameter('racing_line_file', 'racing_line_trackdrive.npz')
+        self.declare_parameter('radius', 20.0)
+        self.declare_parameter('num_points', 100)
+
         # # service client to get cones
         # self.cones_service_client = self.create_client(
         #     GetTrack,
@@ -60,63 +73,154 @@ class Planner(Node):
         # future = self.cones_service_client.call_async(self.req_track)
         # future.add_done_callback(self.load_cones)
 
-        # Declare parameters
-        self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
-        self.declare_parameter('racing_line_file', 'racing_line_trackdrive.npz')
-        self.declare_parameter('radius', 20.0)
-        self.declare_parameter('num_points', 100)
-
-        # Get parameters
-        self.path_type = self.get_parameter('path_type').value
-        self.racing_line_file = self.get_parameter('racing_line_file').value
-        self.radius = self.get_parameter('radius').value
-        self.num_points = self.get_parameter('num_points').value
-
-        # Publisher
-        self.path_pub = self.create_publisher(Path, '/planned_path', 10)
-
-        # Subscribers
-        self.state_sub = self.create_subscription(
-            Float64MultiArray,
-            '/robot/full_state',
-            self.state_callback,
-            10
-        )
-
-        self.state_sub = self.create_subscription(
-            PointCloud2,
-            '/lidar/detections',
-            self.lidar_detection_callback,
-            qos_profile_sensor_data
-        )
-
-
         
-        self.fig, self.ax = plt.subplots(figsize=(8, 8))
-        plt.ion()
-        self.path_line, = self.ax.plot([], [], 'b-', linewidth=2, label='Path')
-        self.cone_unknown_sc = self.ax.scatter([], [], c='gray', s=30, label='Unknown cones', zorder=5)
-        self.cone_left_sc = self.ax.scatter([], [], c='yellow', s=40, edgecolors='black', label='Left cones', zorder=5)
-        self.cone_right_sc = self.ax.scatter([], [], c='blue', s=40, label='Right cones', zorder=5)
-        self.car_marker, = self.ax.plot([], [], 'r^', markersize=10, label='Car', zorder=6)
-        self.ax.set_xlabel("X")
-        self.ax.set_ylabel("Y")
-        self.ax.set_title("Auto Cross Path")
-        self.ax.grid(True)
-        self.ax.set_aspect('equal', adjustable='box')
-        self.ax.legend(loc='upper right')
-        plt.show(block=False)
+        # self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        # plt.ion()
+        # self.path_line, = self.ax.plot([], [], 'b-', linewidth=2, label='Path')
+        # self.cone_unknown_sc = self.ax.scatter([], [], c='gray', s=30, label='Unknown cones', zorder=5)
+        # self.cone_left_sc = self.ax.scatter([], [], c='yellow', s=40, edgecolors='black', label='Left cones', zorder=5)
+        # self.cone_right_sc = self.ax.scatter([], [], c='blue', s=40, label='Right cones', zorder=5)
+        # self.car_marker, = self.ax.plot([], [], 'r^', markersize=10, label='Car', zorder=6)
+        # self.ax.set_xlabel("X")
+        # self.ax.set_ylabel("Y")
+        # self.ax.set_title("Auto Cross Path")
+        # self.ax.grid(True)
+        # self.ax.set_aspect('equal', adjustable='box')
+        # self.ax.legend(loc='upper right')
+        # plt.show(block=False)
 
-        # Load racing line if needed
-        self.racing_line_waypoints = None
-        if self.path_type == 'racing_line':
-            self.load_racing_line()
+    def on_configure(self, state :LifecycleState) -> TransitionCallbackReturn: # lifecyclestate is the current state before transition, return value is whether the transition succeeded
+        self.get_logger().info('Configuring Path Planner...')
+        
+        try:
+            # initialize fields
+            self.path_planner = PathPlanner(MissionTypes.trackdrive)
 
-        # Generate and publish path periodically
-        self.timer = self.create_timer(1.0, self.publish_path)
+            # Get parameters
+            self.path_type = self.get_parameter('path_type').value
+            self.racing_line_file = self.get_parameter('racing_line_file').value
+            self.radius = self.get_parameter('radius').value
+            self.num_points = self.get_parameter('num_points').value
 
-        self.get_logger().info(f'Path Planner started - using {self.path_type} path')
+            # Load racing line if needed
+            if self.path_type == 'racing_line':
+                self.load_racing_line()
 
+            # Publisher - create publisher and timer at 1 Hz
+            self.path_pub = self.create_lifecycle_publisher(Path, '/planned_path', 10)
+            self.timer = self.create_timer(1.0, self.publish_path)
+            self.timer.cancel() # don't start timer until activated
+        
+            # Subscribers
+            self.state_sub = self.create_subscription(
+                Float64MultiArray,
+                '/robot/full_state',
+                self.state_callback,
+                10
+            )
+
+            self.lidar_sub = self.create_subscription(
+                PointCloud2,
+                '/lidar/detections',
+                self.lidar_detection_callback,
+                qos_profile_sensor_data
+            )
+
+            self.get_logger().info(f'Path Planner configured - using {self.path_type} path')
+
+            return TransitionCallbackReturn.SUCCESS # success moves to inactive, failure stays in unconfigured
+            # should I call super instead? no, super just returns success without doing anything, so we can skip it and do our own thing
+
+        except Exception as e:
+            self.get_logger().error(f'Configuration failed: {e}')
+            return TransitionCallbackReturn.FAILURE
+
+    def on_cleanup(self, state :LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Cleaning up Path Planner...')
+
+        try:
+            self._destroy_resources()
+            
+            # Reset configured/runtime data
+            self.path_planner = None
+            self.car_position = None
+            self.car_direction = None
+            self.cones = None
+            self.lidar_detections = None
+            self.lidar_cones = None
+            self.racing_line_waypoints = None
+
+            # Reset parameter-backed cached values
+            self.path_type = None
+            self.racing_line_file = None
+            self.radius = None
+            self.num_points = None
+
+            self.get_logger().info('Path Planner cleanup complete')
+            return TransitionCallbackReturn.SUCCESS
+
+        except Exception as e:
+            self.get_logger().error(f'Cleanup failed: {e}')
+            return TransitionCallbackReturn.FAILURE
+    
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Activating Path Planner...')
+
+        result = super().on_activate(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
+
+        if self.timer is not None:
+            self.timer.reset()
+
+        return TransitionCallbackReturn.SUCCESS
+    
+    def on_deactivate(self, state :LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Deactivating Path Planner...')
+        
+        if self.timer is not None:
+            self.timer.cancel() # stop publishing paths
+        
+        return super().on_deactivate(state)
+    
+    def on_shutdown(self, state :LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Shutting down Path Planner...')
+
+        try:
+            self._destroy_resources()            
+        
+            result = super().on_shutdown(state)
+            if result != TransitionCallbackReturn.SUCCESS:
+                return result
+        
+            return TransitionCallbackReturn.SUCCESS
+        
+        except Exception as e:
+            self.get_logger().error(f'Shutdown failed: {e}')
+            return TransitionCallbackReturn.FAILURE
+
+
+    def _destroy_resources(self):
+        # Stop timer first
+        if self.timer is not None:
+            self.timer.cancel()
+            self.destroy_timer(self.timer)
+            self.timer = None
+
+        # Destroy publisher
+        if self.path_pub is not None:
+            self.destroy_lifecycle_publisher(self.path_pub)
+            self.path_pub = None
+
+        # Destroy subscriptions
+        if self.state_sub is not None:
+            self.destroy_subscription(self.state_sub)
+            self.state_sub = None
+
+        if self.lidar_sub is not None:
+            self.destroy_subscription(self.lidar_sub)
+            self.lidar_sub = None
+            
     def state_callback(self, msg):
         """
         Receive full state from SuperStateSpy.
@@ -127,6 +231,10 @@ class Planner(Node):
         6: vel_x, 7: vel_y, 8: vel_z
         9: acc_x, 10: acc_y, 11: acc_z
         """
+        if not self.state_sub or not self._is_active:
+            self.get_logger().info('Received state update but subscription is inactive. Ignoring message.')
+            return # ignore state updates when not active
+
         x = msg.data[0]
         y = msg.data[1]
         self.car_position = np.array([x, y])
@@ -135,6 +243,10 @@ class Planner(Node):
         self.car_direction = np.array([np.cos(yaw), np.sin(yaw)])
 
     def lidar_detection_callback(self, msg: PointCloud2):
+        if not self.lidar_sub or not self._is_active:
+            self.get_logger().info('Received lidar data but subscription is inactive. Ignoring message.')
+            return # ignore lidar updates when not active
+        
         n = msg.width * msg.height
         if n == 0:
             return  # no detections — keep lidar_cones as-is so the car won't start driving
@@ -424,6 +536,10 @@ class Planner(Node):
 
 
     def publish_path(self):
+        if not self.path_pub or not self._is_active:
+            self.get_logger().info('Lifecycle publisher is inactive. Messages are not published.')
+            return
+
         """Publish the planned path"""
         if self.path_type == 'racing_line':
             path = self.generate_racing_line_path()
@@ -447,17 +563,23 @@ class Planner(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = Planner()
+    rclpy.spin(node)
+    rclpy.shutdown()
 
-    try:
-        while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.05)
-            plt.pause(0.05)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        plt.close('all')
-        node.destroy_node()
-        rclpy.shutdown()
+# def main(args=None):
+#     rclpy.init(args=args)
+#     node = Planner()
+
+#     try:
+#         while rclpy.ok():
+#             rclpy.spin_once(node, timeout_sec=0.05)
+#             plt.pause(0.05)
+#     except KeyboardInterrupt:
+#         pass
+#     finally:
+#         plt.close('all')
+#         node.destroy_node()
+#         rclpy.shutdown()
 
 
 if __name__ == '__main__':
