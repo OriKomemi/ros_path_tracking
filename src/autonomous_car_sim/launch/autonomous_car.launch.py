@@ -60,9 +60,18 @@ def generate_launch_description():
         ],
     )
 
+    lifecycle_manager = Node(
+        package='autonomous_car_sim',
+        executable='lifecycle_manager',
+        name='lifecycle_manager',
+        output='screen',
+        parameters=[],
+    )
+
     return LaunchDescription([
         planner_preset_arg,
         controller_preset_arg,
         path_planner,
         vehicle_controller,
+        lifecycle_manager,
     ])

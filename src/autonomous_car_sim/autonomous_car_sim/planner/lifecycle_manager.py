@@ -14,10 +14,10 @@ class LifecycleManager(Node):
         super().__init__('lifecycle_manager')
 
         self.managed_nodes = managed_nodes
-        self.clients = {}
+        self.nodes = {}
 
         for node_name in self.managed_nodes:
-            self.clients[node_name] = {
+            self.nodes[node_name] = {
                 'get_state': self.create_client(
                     GetState,
                     f'/{node_name}/get_state'
@@ -35,7 +35,7 @@ class LifecycleManager(Node):
 
         all_ready = True
 
-        for node_name, node_clients in self.clients.items():
+        for node_name, node_clients in self.nodes.items():
             get_state_client = node_clients['get_state']
             change_state_client = node_clients['change_state']
 
@@ -51,13 +51,13 @@ class LifecycleManager(Node):
     
     # Assume every node in managed_nodes has get_state services
     def get_state(self, node_name: str) -> LifecycleState | None:
-        if node_name not in self.clients:
+        if node_name not in self.nodes:
             self.get_logger().error(f'Unknown managed node: {node_name}')
             return None
 
         try:
             req = GetState.Request()
-            future = self.clients[node_name]['get_state'].call_async(req)
+            future = self.nodes[node_name]['get_state'].call_async(req)
             rclpy.spin_until_future_complete(self, future)
 
             if future.result() is None:
@@ -76,7 +76,7 @@ class LifecycleManager(Node):
 
     # Assume every node in managed_nodes has change_state services
     def change_state(self, node_name: str, transition : Transition) -> bool | rclpy.task.Future:
-        if node_name not in self.clients:
+        if node_name not in self.nodes:
             self.get_logger().error(f'Unknown managed node: {node_name}')
             return False
 
@@ -85,7 +85,7 @@ class LifecycleManager(Node):
             req.transition.id = transition.id
             req.transition.label = transition.label
 
-            future = self.clients[node_name]['change_state'].call_async(req) 
+            future = self.nodes[node_name]['change_state'].call_async(req) 
 
             rclpy.spin_until_future_complete(self, future)
             response = future.result()
@@ -117,7 +117,7 @@ class LifecycleManager(Node):
         futures = []
         for node_name in self.managed_nodes:
             req = GetState.Request()
-            futures.append(self.clients[node_name]['get_state'].call_async(req))
+            futures.append(self.nodes[node_name]['get_state'].call_async(req))
 
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -140,7 +140,7 @@ class LifecycleManager(Node):
             req = ChangeState.Request()
             req.transition.id = transition.id
             req.transition.label = transition.label
-            futures.append(self.clients[node_name]['change_state'].call_async(req)) 
+            futures.append(self.nodes[node_name]['change_state'].call_async(req)) 
 
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.1)

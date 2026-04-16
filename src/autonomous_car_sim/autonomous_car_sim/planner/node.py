@@ -4,7 +4,7 @@ from ast import Add
 
 import rclpy
 # from rclpy.node import Node
-from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn, Node
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
@@ -52,6 +52,7 @@ class Planner(LifecycleNode):
         self.state_sub = None
         self.lidar_sub = None
         self.racing_line_waypoints = None # load racing line if needed
+        self._is_active = False
         
         # Declare parameters
         self.declare_parameter('path_type', 'racing_line')  # racing_line, circle, figure8, straight
@@ -98,6 +99,7 @@ class Planner(LifecycleNode):
 
             # Get parameters
             self.path_type = self.get_parameter('path_type').value
+            self.get_logger().info(f'\n\nPath type parameter: {self.path_type}\n\n')
             self.racing_line_file = self.get_parameter('racing_line_file').value
             self.radius = self.get_parameter('radius').value
             self.num_points = self.get_parameter('num_points').value
@@ -173,6 +175,7 @@ class Planner(LifecycleNode):
         if self.timer is not None:
             self.timer.reset()
 
+        self._is_active = True
         return TransitionCallbackReturn.SUCCESS
     
     def on_deactivate(self, state :LifecycleState) -> TransitionCallbackReturn:
@@ -181,6 +184,7 @@ class Planner(LifecycleNode):
         if self.timer is not None:
             self.timer.cancel() # stop publishing paths
         
+        self._is_active = False
         return super().on_deactivate(state)
     
     def on_shutdown(self, state :LifecycleState) -> TransitionCallbackReturn:
