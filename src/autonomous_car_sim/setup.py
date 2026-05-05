@@ -27,6 +27,7 @@ setup(
             'path_planner = autonomous_car_sim.planner.node:main',
             'vehicle_controller = autonomous_car_sim.controller.node:main',
             'reset_position = autonomous_car_sim.reset_position:main',
+            'visualization_node = autonomous_car_sim.visualization.node:main',
         ],
     },
 )

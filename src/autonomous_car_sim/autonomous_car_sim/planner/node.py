@@ -12,7 +12,6 @@ import math
 import numpy as np
 import os
 import sys
-import matplotlib.pyplot as plt
 
 # Add the ft-fsd-path-planning directory to Python path
 #change to parent directory of this file
@@ -91,21 +90,7 @@ class Planner(Node):
         )
 
 
-        
-        self.fig, self.ax = plt.subplots(figsize=(8, 8))
-        plt.ion()
-        self.path_line, = self.ax.plot([], [], 'b-', linewidth=2, label='Path')
-        self.cone_unknown_sc = self.ax.scatter([], [], c='gray', s=30, label='Unknown cones', zorder=5)
-        self.cone_left_sc = self.ax.scatter([], [], c='yellow', s=40, edgecolors='black', label='Left cones', zorder=5)
-        self.cone_right_sc = self.ax.scatter([], [], c='blue', s=40, label='Right cones', zorder=5)
-        self.car_marker, = self.ax.plot([], [], 'r^', markersize=10, label='Car', zorder=6)
-        self.ax.set_xlabel("X")
-        self.ax.set_ylabel("Y")
-        self.ax.set_title("Auto Cross Path")
-        self.ax.grid(True)
-        self.ax.set_aspect('equal', adjustable='box')
-        self.ax.legend(loc='upper right')
-        plt.show(block=False)
+    
 
         # Load racing line if needed
         self.racing_line_waypoints = None
@@ -162,31 +147,6 @@ class Planner(Node):
         cones_by_type[ConeTypes.UNKNOWN] = np.array(xy)
         self.get_logger().info(f'Received lidar detection: {len(xy)} points')
         self.lidar_cones = cones_by_type
-
-        # Update cone scatter plot immediately on new lidar data
-        def _set(sc, arr):
-            if arr is not None and arr.ndim == 2 and len(arr) > 0:
-                sc.set_offsets(arr)
-            else:
-                sc.set_offsets(np.empty((0, 2)))
-
-        _set(self.cone_unknown_sc, self.lidar_cones[ConeTypes.UNKNOWN])
-        _set(self.cone_left_sc,    self.lidar_cones[ConeTypes.LEFT])
-        _set(self.cone_right_sc,   self.lidar_cones[ConeTypes.RIGHT])
-        if self.car_position is not None:
-            self.car_marker.set_xdata([self.car_position[0]])
-            self.car_marker.set_ydata([self.car_position[1]])
-
-        # ax.relim() ignores scatter (PathCollection) — compute bounds manually
-        all_pts = [xy]
-        if self.car_position is not None:
-            all_pts.append(self.car_position.reshape(1, 2))
-        pts = np.vstack(all_pts)
-        pad = 5.0
-        self.ax.set_xlim(pts[:, 0].min() - pad, pts[:, 0].max() + pad)
-        self.ax.set_ylim(pts[:, 1].min() - pad, pts[:, 1].max() + pad)
-        self.fig.canvas.draw_idle()
-
 
       
     def load_racing_line(self):
@@ -385,26 +345,6 @@ class Planner(Node):
         y_vals = data[:, 2]
 
         # Update path line
-        self.path_line.set_xdata(x_vals)
-        self.path_line.set_ydata(y_vals)
-
-        # Update cone scatter plots
-        def _set_scatter(sc, arr):
-            if arr is not None and arr.ndim == 2 and len(arr) > 0:
-                sc.set_offsets(arr)
-            else:
-                sc.set_offsets(np.empty((0, 2)))
-
-        _set_scatter(self.cone_unknown_sc, self.lidar_cones[ConeTypes.UNKNOWN])
-        _set_scatter(self.cone_left_sc, self.lidar_cones[ConeTypes.LEFT])
-        _set_scatter(self.cone_right_sc, self.lidar_cones[ConeTypes.RIGHT])
-
-        # Update car position
-        if self.car_position is not None:
-            self.car_marker.set_xdata([self.car_position[0]])
-            self.car_marker.set_ydata([self.car_position[1]])
-
-        self.fig.canvas.draw_idle()
 
         for x, y in zip(x_vals, y_vals):
             pose = PoseStamped()
@@ -451,11 +391,9 @@ def main(args=None):
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.05)
-            plt.pause(0.05)
     except KeyboardInterrupt:
         pass
     finally:
-        plt.close('all')
         node.destroy_node()
         rclpy.shutdown()
 

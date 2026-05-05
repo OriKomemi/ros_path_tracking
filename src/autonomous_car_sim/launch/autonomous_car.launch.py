@@ -59,10 +59,17 @@ def generate_launch_description():
             controller_yaml,
         ],
     )
+    visualization_node = Node(
+        package='autonomous_car_sim',
+        executable='visualization_node',
+        name='visualization_node',
+        output='screen',
+    )    
 
     return LaunchDescription([
         planner_preset_arg,
         controller_preset_arg,
         path_planner,
         vehicle_controller,
+        visualization_node,
     ])

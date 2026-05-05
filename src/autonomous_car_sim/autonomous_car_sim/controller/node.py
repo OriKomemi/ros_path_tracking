@@ -2,7 +2,6 @@
 import math
 import numpy as np
 import time
-import matplotlib.pyplot as plt
 from collections import deque
 # scipy import for smoother plotting, but not required
 try:
@@ -81,9 +80,6 @@ class VehicleController(Node):
         # Logging throttle
         self._last_log_time = self.get_clock().now()
 
-        # Initialize speed plotting (timestamps, measured, target)
-        self.init_speed_plot()
-
         # Smoothed values for EMA (initialized when first data arrives)
         self._v_meas_smoothed = None
         self._v_tgt_smoothed = None
@@ -146,97 +142,7 @@ class VehicleController(Node):
         self.get_logger().info(text)
 
 
-    def init_speed_plot(self):
-        """Initialize speed vs time plotting buffers and figure."""
-        self._plot_time = deque(maxlen=2000)
-        self._plot_v_meas = deque(maxlen=2000)
-        self._plot_v_tgt = deque(maxlen=2000)
-
-        try:
-            self._plot_fig, self._plot_ax = plt.subplots()
-            (self._plot_line_meas,) = self._plot_ax.plot([], [], label='v_meas')
-            (self._plot_line_tgt,) = self._plot_ax.plot([], [], label='v_tgt')
-            self._plot_ax.set_xlabel('Time [s]')
-            self._plot_ax.set_ylabel('Speed [m/s]')
-            self._plot_ax.legend()
-            
-            # Rolling window plot: show last N seconds (60s default)
-            self._plot_window_size = 60.0  # seconds
-            self._plot_ax.set_ylim([0, 12])  # fixed y-axis for speed
-            
-            self._plot_start_time = time.time()
-            self.create_timer(0.5, self._update_speed_plot)
-        except Exception:
-            self._plot_fig = None
-            self._plot_ax = None
-            self._plot_line_meas = None
-            self._plot_line_tgt = None
-            self._plot_start_time = time.time()
-
-    def _update_speed_plot(self):
-        """Non-blocking redraw of the live speed plot with rolling window (fixed scale)."""
-        if not getattr(self, '_plot_fig', None) or not self._plot_time:
-            return
-        try:
-            t = np.array(self._plot_time)
-            v_meas_list = np.array(self._plot_v_meas)
-            v_tgt_list = np.array(self._plot_v_tgt)
-
-            # Rolling window: show only the last N seconds
-            window_size = getattr(self, '_plot_window_size', 60.0)
-            if len(t) > 0:
-                t_max = t[-1]
-                t_min = max(0, t_max - window_size)
-                
-                # Filter data within window
-                mask = (t >= t_min) & (t <= t_max)
-                t_window = t[mask]
-                v_meas_window = v_meas_list[mask]
-                v_tgt_window = v_tgt_list[mask]
-            else:
-                t_window = t
-                v_meas_window = v_meas_list
-                v_tgt_window = v_tgt_list
-
-            # Use B-spline interpolation for smooth curves when available and enabled
-            if _SCIPY_AVAILABLE and self.cfg.get('plot_interp', True) and t_window.size >= 4 and (t_window[-1] - t_window[0]) > 1e-6:
-                # create dense time grid
-                num_out = max(int(self.cfg.get('plot_interp_points', 200)), t_window.size * 10)
-                t_new = np.linspace(t_window[0], t_window[-1], num_out)
-                try:
-                    spline_meas = make_interp_spline(t_window, v_meas_window, k=3)
-                    v_meas_smooth = spline_meas(t_new)
-                except Exception:
-                    t_new = t_window
-                    v_meas_smooth = v_meas_window
-
-                try:
-                    spline_tgt = make_interp_spline(t_window, v_tgt_window, k=3)
-                    v_tgt_smooth = spline_tgt(t_new)
-                except Exception:
-                    t_new = t_window
-                    v_tgt_smooth = v_tgt_window
-
-                self._plot_line_meas.set_data(t_new, v_meas_smooth)
-                self._plot_line_tgt.set_data(t_new, v_tgt_smooth)
-            else:
-                # Fallback: plot raw (or EMA-smoothed) points
-                self._plot_line_meas.set_data(t_window, v_meas_window)
-                self._plot_line_tgt.set_data(t_window, v_tgt_window)
-
-            # Set fixed x and y axes (no autoscaling)
-            if len(t) > 0:
-                t_max = t[-1]
-                t_min = max(0, t_max - window_size)
-                self._plot_ax.set_xlim([t_min, t_max])
-            
-            self._plot_ax.set_ylim([0, 12])  # Fixed y-axis
-            
-            self._plot_fig.canvas.draw()
-            plt.pause(0.001)
-        except Exception:
-            return
-
+    
 
     def control_loop(self):
         if self.state is None or self.path is None or not self.path.poses:
@@ -328,15 +234,6 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-        # Keep plot open after shutdown
-        try:
-            fig = getattr(node, '_plot_fig', None)
-            if fig is not None:
-                fig.savefig('speed_plot.png', dpi=150)
-                plt.ioff()  
-                plt.show(block = True)  # blocks until window closed
-        except Exception:
-            pass
 
 
 if __name__ == '__main__':
